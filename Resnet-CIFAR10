@@ -1,0 +1,120 @@
+import numpy as np
+import torch 
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.autograd import Variable
+from torchvision.datasets import CIFAR10
+
+#下面开始定义bottleneck
+class bottleneck(nn.Module):
+    def __init__(self,in_channel,out_channel,same_shape=True):         #same_shape指x与F（x）规模是否一致，不一致要变成一致
+        super(bottleneck,self).__init__()
+        self.same_shape=same_shape
+        stride=1 if self.same_shape else 2
+        
+        self.conv1=nn.Conv2d(in_channel,out_channel,3,stride,padding=1,bias=False)
+        self.bn1=nn.BatchNorm2d(out_channel)
+        
+        self.conv2=nn.Conv2d(out_channel,out_channel,3,1,padding=1,bias=False)
+        self.bn2=nn.BatchNorm2d(out_channel)
+        
+        if not self.same_shape:
+            self.conv3=nn.Conv2d(in_channel,out_channel,1,stride,padding=0,bias=False)
+            
+    def forward(self,x):
+        out=self.conv1(x)
+        out=F.relu(self.bn1(out),True)
+        out=self.conv2(out)
+        out=F.relu(self.bn2(out),True)
+        if not self.same_shape:
+            x=self.conv3(x)
+        return F.relu(x+out,True)
+        
+test_net=bottleneck(32,64,False)                             #做完一个板块就测试一个板块是否符合要求
+test_x=Variable(torch.rand(1,32,96,96))
+print(test_x.size())
+test_y=test_net(test_x)
+print(test_y.size())
+
+#下面开始定义网络模型
+class resnet(nn.Module):
+    def __init__(self,in_channel,num_classes,verbose=False):
+        super(resnet,self).__init__()
+        self.verbose=verbose
+        
+        self.block1=nn.Conv2d(in_channel,64,7,2)
+        
+        self.block2=nn.Sequential(
+            nn.MaxPool2d(3,2),
+            bottleneck(64,64),
+            bottleneck(64,64)
+        )
+        
+        self.block3=nn.Sequential(
+            bottleneck(64,128,False),
+            bottleneck(128,128),
+            bottleneck(128,128),
+        )
+        
+        self.block4=nn.Sequential(
+            bottleneck(128,256,False),
+            bottleneck(256,256),
+            bottleneck(256,256),
+        )
+        
+        self.block5=nn.Sequential(
+            bottleneck(256,512,False),
+            bottleneck(512,512),
+            nn.AvgPool2d(3)
+        )
+        
+        self.classfy=nn.Linear(512,num_classes)
+        
+    def forward(self,x):
+        x=self.block1(x)
+        if self.verbose:
+            print('block 1 output:{}'.format(x.shape))
+        x=self.block2(x)
+        if self.verbose:
+            print('block 2 output:{}'.format(x.shape))
+        x=self.block3(x)
+        if self.verbose:
+            print('block 3 output:{}'.format(x.shape))
+        x=self.block4(x)
+        if self.verbose:
+            print('block 4 output:{}'.format(x.shape))
+        x=self.block5(x)
+        if self.verbose:
+            print('block 5 output:{}'.format(x.shape))
+        x=x.view(x.size(0),-1)
+        x=self.classfy(x)
+        if self.verbose:
+            print('class output:{}'.format(x.shape))
+        return x
+     
+test_net=resnet(3,10,True)                             #做完一个板块就测试一个板块是否符合要求
+test_x=Variable(torch.rand(1,3,96,96))
+print(test_x.size())
+test_y=test_net(test_x)
+
+#下面是准备数据
+def data_tf(x):
+    x=x.resize((96,96),2)
+    x=np.array(x,dtype='float32')/32
+    x=(x-0.5)/0.5
+    x=x.transpose((2,0,1))
+    x=torch.from_numpy(x)
+    return x
+    
+from torch.utils.data import DataLoader
+train_set=CIFAR10('./data',train=True,transform=data_tf,download=True)
+test_set=CIFAR10('./data',train=False,transform=data_tf,download=True)
+train_data=DataLoader(train_set,batch_size=64,shuffle=True)
+test_data=DataLoader(train_set,batch_size=64,shuffle=False)
+
+#创建网络，准备loss函数和定义SGD
+net=resnet(3,10)
+optimizer=torch.optim.SGD(net.parameters(),lr=0.01)
+criterion=nn.CrossEntropyLoss()
+#训练
+train(net,train_data,test_data,20,optimizer,criterion)
